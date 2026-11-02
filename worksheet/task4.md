@@ -1,14 +1,15 @@
 # Task 4: Deployment topologies and trade-offs
 
-**Name / ชื่อ:**
+**Name / ชื่อ:** วรเมธ พงศาประเสริฐพร
 
-**Student ID / รหัสนิสิต:**
+**Student ID / รหัสนิสิต:** 6970259821
 
 This is **individual work**: each student completes and submits their own copy, in their own fork.
 
 *งานนี้เป็น**งานเดี่ยว** นิสิตแต่ละคนทำและส่งงานของตัวเอง ใน fork ของตัวเอง*
 
 **Scenario (A, B or C) / Scenario ที่เลือก:**
+ > ข้อ A
 
 Choose **one** scenario below. If the last digit of your student ID is odd, take A or B; if it is even, take B or C. Use your measurements from Tutorial 6 as evidence: cite run names from `results/runs.csv`. Answer in Thai or English.
 
@@ -58,9 +59,9 @@ The three most important quality requirements for your scenario, each with a num
 
 | # | Quality | Requirement |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 | Performance| Latency (p95 latency < 2,000 ms)|
+| 2 | Capacity| Scalability (ส่งให้ Large model ไม่เกิน 20 calls/วินาที)| 
+| 3 | Accuracy | >= 90%–95% |
 
 ## 2. Design / การออกแบบ
 
@@ -69,15 +70,20 @@ Your topology, the patterns you add, and a container-level diagram (C4 level 2).
 *topology ที่เลือก pattern ที่เพิ่ม และ diagram ระดับ container (C4 level 2) เขียนด้วย Mermaid*
 
 ```mermaid
-C4Container
-    title Your design: container diagram
-    %% Replace the example below with your own people, containers and relationships.
-    %% See the CampusEats C4 diagram in README.md for the full syntax.
-    Person(customer, "Customer", "Writes restaurant reviews")
-    System_Boundary(campuseats, "CampusEats") {
-        Container(review, "Review service", "Python, FastAPI", "What it does")
-    }
-    Rel(customer, review, "Posts reviews", "HTTP/JSON")
+    C4Container
+        title CampusEats: container diagram
+        Person(customer, "Customer", "เขียนรีวิวร้าน (จำลองด้วย tools/loadtest.py)")
+        Person(owner, "Restaurant owner", "ดูรีวิวและ label ของร้านตัวเอง")
+        System_Boundary(campuseats, "CampusEats") {
+            Container(gateway, "API gateway", "Python, FastAPI, :8000", "จุดเข้าเดียวของ client ส่งต่อ /api/reviews และ /api/restaurants")
+            Container(review, "Review service", "Python, FastAPI, :8001", "เก็บรีวิวในหน่วยความจำ")
+            Container(inference, "Inference service", "Python, FastAPI, scikit-learn, :8002", "small model และ large model")
+        }
+        Rel(customer, gateway, "ส่งรีวิว", "HTTP/JSON")
+        Rel(owner, gateway, "ดูจำนวนรีวิวตาม label", "HTTP/JSON")
+        Rel(gateway, review, "ส่งต่อ request", "HTTP/JSON")
+        Rel(review, inference, "POST /predict", "REST")
+        UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")
 ```
 
 ## 3. Evidence / หลักฐาน
@@ -88,8 +94,8 @@ Which runs support your choice? Show the numbers and, for scenario A, the capaci
 
 | Run | What it shows / แสดงอะไร |
 |---|---|
-| | |
-| | |
+| t3-cache | p50 = 10 ms, p95 = 518 ms, accuracy = 91.5%, cache_hits = 36%, large_calls = 31% เมื่อมีรีวิวพีค 40 รีวิว/วินาที จะเรียก Large model เพียง 40 × 31% = 12.4 calls/วินาที|
+| t1-after | errors = 0, pending = 20, p95 = 1,008 ms, accuracy = 92.8% เมื่อ Large model ค้าง Fallback ช่วยตัด timeout ใน 1 วินาที ท​ำให้ระบบไม่ล่มและยังตอบทันภายใน 2 วินาที|
 
 ## 4. ADR
 
@@ -97,20 +103,20 @@ Use the ADR format from W5.
 
 *ใช้รูปแบบ ADR จาก W5*
 
-**Title:**
+**Title:** Topology และ Serving Patterns ส​ำหรับระบบแจ้งเตือนรีวิวเชิงลบ
 
 **Status:** Proposed
 
-**Context:**
+**Context:** ช่วงพีคตอนเที่ยงมีรีวิวเข้ามา 40 รีวิว/วินาที และต้องแจ้งเตือนเจ้าของร้านภายใน 2 วินาที โดยห้ามทายผิดบ่อย แต่ Large model รับโหลดได้สูงสุดแค่ 20 calls/วินาที และมีโอกาสค้างได้
 
-**Decision:**
+**Decision:** เลือกใช้ Topology T1 (Model as a service) (หรือ T3 Hybrid ตามกราฟในข้อ 2) ร่วมกับ 3 patterns ได้แก่ Prediction Cache, Cascade (threshold 0.6) และ Fallback (timeout 1 วินาที)
 
 **Consequences:**
-- Positive:
-- Negative:
+- Positive: ลดการเรียก Large model เหลือเพียง 31% (12.4 calls/วินาที) ซึ่งไม่เกินเพดาน 20 calls/วินาที, ความเร็ว p95 อยู่ที่ 518 ms (ทันภายใน 2 วินาที), ความแม่นย​ำสูง 91.5%, และไม่เกิด error เมื่อโมเดลค้าง
+- Negative: บอกข้อเสียหรือสิ่งที่ต้องแลก: ความแม่นย​ำลดลงเล็กน้อยจาก 93.5% เหลือ 91.5%, รีวิวที่เกิด timeout จะถูกเก็บเป็น pending ท​ำให้พลาดการแจ้งเตือนทันทีไปบ้าง, และต้องคอยล้าง Cache เมื่อมีการเปลี่ยนโมเดลใหม่
 
 **Alternatives considered:** at least one topology you rejected, and why.
 
 *อย่างน้อยหนึ่ง topology ที่ไม่เลือก และเหตุผล*
 
->
+> ไม่เลือก T4 เพราะมีการประมวลผลเป็นรอบ ๆ (Asynchronous / batch) ทำให้ส่งแจ้งเตือนภายใน 2 วินาทีไม่ได้
